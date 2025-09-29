@@ -15,9 +15,7 @@ use ratatui::{
     layout::{self, Constraint, Layout},
     style::{Color, Modifier, Style, Stylize, palette::tailwind},
     text::{Line, Text},
-    widgets::{
-        self, Block, HighlightSpacing, Paragraph, Row, ScrollbarState, Table, TableState, Widget,
-    },
+    widgets::{self, HighlightSpacing, Row, ScrollbarState, Table, TableState},
 };
 use tui_input::{Input, backend::crossterm::EventHandler};
 
@@ -25,7 +23,6 @@ mod replay_format;
 
 // TODO:
 // * Add new entities
-// * Add components to entities
 // * Support more complex datatypes than i16/String/bool (ADTs defined on disk as a config)
 // * Validate the data written by the user
 // * Persist data to disk and load it on startup
@@ -150,12 +147,13 @@ enum ReplayInfoEditorFocus {
     LabelData(usize),
     LabelRemove(usize),
     LabelAdd,
+    AddableLabel(usize),
     SaveChanges,
 }
 
 impl ReplayInfoEditorFocus {
     #[must_use]
-    fn next_focus(self, max_labels: usize, for_deletion: bool) -> Self {
+    fn next_focus(self, max_labels: usize, max_addable_labels: usize, for_deletion: bool) -> Self {
         match self {
             ReplayInfoEditorFocus::LabelData(n) => ReplayInfoEditorFocus::LabelRemove(n),
             ReplayInfoEditorFocus::LabelRemove(n) => {
@@ -168,13 +166,21 @@ impl ReplayInfoEditorFocus {
                     ReplayInfoEditorFocus::LabelData(n + 1)
                 }
             }
+            ReplayInfoEditorFocus::AddableLabel(n) => {
+                let mut new_idx = n + 1;
+                if max_addable_labels == new_idx {
+                    new_idx = 0;
+                }
+
+                ReplayInfoEditorFocus::AddableLabel(new_idx)
+            }
             ReplayInfoEditorFocus::LabelAdd => ReplayInfoEditorFocus::SaveChanges,
             ReplayInfoEditorFocus::SaveChanges => ReplayInfoEditorFocus::SaveChanges,
         }
     }
 
     #[must_use]
-    fn prev_focus(self, max_labels: usize) -> Self {
+    fn prev_focus(self, max_labels: usize, max_addable_labels: usize) -> Self {
         match self {
             ReplayInfoEditorFocus::LabelRemove(n) => ReplayInfoEditorFocus::LabelData(n),
             ReplayInfoEditorFocus::LabelData(n) => {
@@ -183,6 +189,15 @@ impl ReplayInfoEditorFocus {
                 } else {
                     ReplayInfoEditorFocus::LabelRemove(n - 1)
                 }
+            }
+            ReplayInfoEditorFocus::AddableLabel(n) => {
+                let new_idx = if n == 0 {
+                    max_addable_labels - 1
+                } else {
+                    n - 1
+                };
+
+                ReplayInfoEditorFocus::AddableLabel(new_idx)
             }
             ReplayInfoEditorFocus::LabelAdd => {
                 if max_labels >= 1 {
@@ -260,6 +275,24 @@ impl App {
         }
     }
 
+    fn addable_labels(
+        db: &ReplayDB,
+        existing_labels: &[LabelInput],
+    ) -> impl Iterator<Item = Label> {
+        db.labels
+            .iter()
+            .filter(|new_label| {
+                !existing_labels
+                    .iter()
+                    .any(|existing_label| existing_label.label == **new_label)
+            })
+            .cloned()
+    }
+
+    fn number_addable_labels(db: &ReplayDB, existing_labels: &[LabelInput]) -> usize {
+        Self::addable_labels(db, existing_labels).count()
+    }
+
     fn run(mut self, terminal: &mut DefaultTerminal) {
         loop {
             terminal.draw(|frame| self.draw(frame)).unwrap();
@@ -267,7 +300,7 @@ impl App {
             match &mut self.state {
                 AppState::ReplayDBViewer {
                     table_state,
-                    scroll_state,
+                    scroll_state: _,
                 } => {
                     let event = event::read().unwrap();
                     if let Event::Key(key) = event {
@@ -293,6 +326,14 @@ impl App {
                                     selected_entity,
                                 ));
                             }
+                            KeyCode::Char('n') => {
+                                let selected_entity = self.replay_db.world.spawn().id();
+
+                                self.state = AppState::ReplayInfoEditor(ReplayInfoEditor::new(
+                                    &self.replay_db,
+                                    selected_entity,
+                                ));
+                            }
                             _ => (),
                         }
                     }
@@ -306,25 +347,60 @@ impl App {
                     if let Event::Key(key) = event {
                         match key.code {
                             KeyCode::Esc => {
-                                self.state = AppState::ReplayDBViewer {
-                                    table_state: TableState::default().with_selected(0),
-                                    scroll_state: ScrollbarState::new(0),
+                                if let ReplayInfoEditorFocus::AddableLabel(_) = focus {
+                                    *focus = ReplayInfoEditorFocus::LabelAdd;
+                                } else {
+                                    self.state = AppState::ReplayDBViewer {
+                                        table_state: TableState::default().with_selected(0),
+                                        scroll_state: ScrollbarState::new(0),
+                                    }
                                 }
                             }
-                            KeyCode::Up => *focus = focus.prev_focus(labels.len()),
+                            KeyCode::Up => {
+                                *focus = focus.prev_focus(
+                                    labels.len(),
+                                    Self::number_addable_labels(&self.replay_db, labels),
+                                )
+                            }
                             KeyCode::Down | KeyCode::Tab => {
-                                *focus = focus.next_focus(labels.len(), false)
+                                *focus = focus.next_focus(
+                                    labels.len(),
+                                    Self::number_addable_labels(&self.replay_db, labels),
+                                    false,
+                                )
                             }
                             KeyCode::Enter => match *focus {
                                 ReplayInfoEditorFocus::LabelData(n) => {
-                                    *focus = focus.next_focus(labels.len(), false);
+                                    *focus = focus.next_focus(
+                                        labels.len(),
+                                        Self::number_addable_labels(&self.replay_db, labels),
+                                        false,
+                                    );
                                 }
                                 ReplayInfoEditorFocus::LabelRemove(n) => {
-                                    *focus = focus.next_focus(labels.len(), true);
+                                    *focus = focus.next_focus(
+                                        labels.len(),
+                                        Self::number_addable_labels(&self.replay_db, labels),
+                                        true,
+                                    );
                                     labels.remove(n);
                                 }
+                                ReplayInfoEditorFocus::AddableLabel(n) => {
+                                    let label = Self::addable_labels(&self.replay_db, labels)
+                                        .nth(n)
+                                        .unwrap();
+
+                                    labels.push(LabelInput {
+                                        label,
+                                        data: Input::new("".to_string()),
+                                    });
+
+                                    *focus = ReplayInfoEditorFocus::LabelData(labels.len() - 1);
+                                }
                                 ReplayInfoEditorFocus::LabelAdd => {
-                                    *focus = focus.next_focus(labels.len(), false);
+                                    if Self::number_addable_labels(&self.replay_db, labels) > 0 {
+                                        *focus = ReplayInfoEditorFocus::AddableLabel(0);
+                                    }
                                 }
                                 ReplayInfoEditorFocus::SaveChanges => {
                                     if labels.is_empty() {
@@ -388,6 +464,7 @@ impl App {
                                     _ = labels[*n].data.handle_event(&event);
                                 }
                                 ReplayInfoEditorFocus::SaveChanges
+                                | ReplayInfoEditorFocus::AddableLabel(_)
                                 | ReplayInfoEditorFocus::LabelRemove(_)
                                 | ReplayInfoEditorFocus::LabelAdd => (),
                             },
@@ -541,15 +618,19 @@ impl App {
                 focus,
                 labels,
             }) => {
-                // meow
-                let areas = layout::Layout::vertical(Constraint::from_lengths(
+                let rects = layout::Layout::horizontal(Constraint::from_percentages([50, 50]))
+                    .split(frame.area());
+                let label_edit_area = rects[0];
+
+                // edit labels
+                let edit_labels_areas = layout::Layout::vertical(Constraint::from_lengths(
                     (0..(labels.len() * 2 + 2)).map(|_| 1),
                 ))
-                .split(frame.area());
+                .split(label_edit_area);
 
                 for (n, label) in labels.iter().enumerate() {
                     // Draw the label name + user input
-                    let area = areas[n * 2];
+                    let area = edit_labels_areas[n * 2];
 
                     let style = if let ReplayInfoEditorFocus::LabelData(n2) = focus
                         && *n2 == n
@@ -572,7 +653,7 @@ impl App {
                     frame.render_widget(label.data.value(), value_area);
 
                     // Draw the delete label "button"
-                    let area = areas[n * 2 + 1];
+                    let area = edit_labels_areas[n * 2 + 1];
                     let style: Style = if let ReplayInfoEditorFocus::LabelRemove(n2) = focus
                         && *n2 == n
                     {
@@ -585,7 +666,7 @@ impl App {
                 }
 
                 // Draw the add label "button"
-                let area = areas[labels.len() * 2];
+                let area = edit_labels_areas[labels.len() * 2];
                 let style: Style = if let ReplayInfoEditorFocus::LabelAdd = focus {
                     Color::Blue.into()
                 } else {
@@ -595,7 +676,7 @@ impl App {
                 frame.render_widget(line, area);
 
                 // Draw the save changes "button"
-                let area = areas[labels.len() * 2 + 1];
+                let area = edit_labels_areas[labels.len() * 2 + 1];
                 let style: Style = if let ReplayInfoEditorFocus::SaveChanges = focus {
                     Color::Green.into()
                 } else {
@@ -604,9 +685,43 @@ impl App {
                 let line = Line::raw("Save Changes").style(style).bold();
                 frame.render_widget(line, area);
 
+                // add labels list
+                let add_label_area = rects[1];
+
+                let addable_labels: Vec<_> = self
+                    .replay_db
+                    .labels
+                    .iter()
+                    .filter(|new_label| {
+                        !labels
+                            .iter()
+                            .any(|existing_label| existing_label.label == **new_label)
+                    })
+                    .collect();
+
+                let addable_labels_areas = layout::Layout::vertical(Constraint::from_lengths(
+                    addable_labels
+                        .iter()
+                        .map(|label| /* label.name.len() as u16 */ 1),
+                ))
+                .split(add_label_area);
+
+                for (n, label) in addable_labels.iter().enumerate() {
+                    let style: Style = if let ReplayInfoEditorFocus::AddableLabel(selected_n) =
+                        focus
+                        && *selected_n == n
+                    {
+                        Color::Green.into()
+                    } else {
+                        Color::White.into()
+                    };
+                    let line = Line::raw(&label.name).style(style).bold();
+                    frame.render_widget(line, addable_labels_areas[n]);
+                }
+
                 match focus {
                     ReplayInfoEditorFocus::LabelData(n) => {
-                        let area = areas[*n * 2];
+                        let area = edit_labels_areas[*n * 2];
                         let label = &labels[*n];
                         let cursor_offset = label.data.cursor();
                         frame.set_cursor_position(area.offset(layout::Offset {
@@ -616,6 +731,7 @@ impl App {
                     }
 
                     ReplayInfoEditorFocus::SaveChanges
+                    | ReplayInfoEditorFocus::AddableLabel(_)
                     | ReplayInfoEditorFocus::LabelRemove(_)
                     | ReplayInfoEditorFocus::LabelAdd => (),
                 }
