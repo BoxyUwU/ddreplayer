@@ -1,0 +1,3 @@
+/target/**/*
+/dummyreplays/**/*
+Cargo.lock

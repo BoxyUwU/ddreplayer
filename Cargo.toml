@@ -1,0 +1,15 @@
+[package]
+name = "ddreplayer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+crossterm = "0.28.0"
+ratatui = "0.29.0"
+tui-input = { version = "0.13", features = ["crossterm"] }
+ron = "0.8"
+serde = { version = "1", features = ["derive"] }
+decentralecs = { git = "https://github.com/BoxyUwU/decentralecs" }
+decentralecs_dynamic = { git = "https://github.com/BoxyUwU/decentralecs" }
+rand = "0.9"
+strsim = "0.11"
