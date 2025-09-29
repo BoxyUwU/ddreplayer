@@ -22,7 +22,6 @@ use tui_input::{Input, backend::crossterm::EventHandler};
 mod replay_format;
 
 // TODO:
-// * Add new entities
 // * Support more complex datatypes than i16/String/bool (ADTs defined on disk as a config)
 // * Validate the data written by the user
 // * Persist data to disk and load it on startup
